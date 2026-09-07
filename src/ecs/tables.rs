@@ -100,29 +100,31 @@ impl EntityComponent {
     {
         let sprite_text_info = drw.info();
         let class_name: String = format!("{}::{}", type_name::<G>(), &sprite_text_info.text);
-        let glyphs = self.fonts.get_glyphs(sprite_text_info, text_color);
+        let glphs = self.fonts.get_glyphs(sprite_text_info, text_color);
 
-        let image_buffer = glyphs.into_owned();
+        if let Some(glyphs) = glphs {
+            let image_buffer = glyphs.into_owned();
 
-        let mut png = Vec::new();
+            let mut png = Vec::new();
 
-        let mut cursor = Cursor::new(&mut png);
+            let mut cursor = Cursor::new(&mut png);
 
-        image_buffer
-            .write_to(&mut cursor, image::ImageFormat::Png)
-            .expect("Failed to write png");
+            image_buffer
+                .write_to(&mut cursor, image::ImageFormat::Png)
+                .expect("Failed to write png");
 
-        let s = Shapes::Image(self.storage.load_texture_from_bytes(&png));
+            let s = Shapes::Image(self.storage.load_texture_from_bytes(&png));
 
-        let boxed_drw: DynObject = Box::new(drw);
+            let boxed_drw: DynObject = Box::new(drw);
 
-        self.push(
-            boxed_drw,
-            transformation,
-            Some(s),
-            ClassInfo::of_class::<G>(class_name),
-            text_color,
-        );
+            self.push(
+                boxed_drw,
+                transformation,
+                Some(s),
+                ClassInfo::of_class::<G>(class_name),
+                text_color,
+            );
+        }
     }
 
     fn push(

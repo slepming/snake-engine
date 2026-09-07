@@ -9,7 +9,7 @@ use crate::{res::assets::TextureStorage, text::sprite_text::SpriteTextCreateInfo
 
 /// Stores the necessary parameters for fonts
 pub struct TextFont {
-    /// Character size
+    /// Fonts
     fonts: Vec<FontVec>,
 }
 
@@ -45,8 +45,15 @@ impl TextFont {
         &self,
         text: SpriteTextCreateInfo,
         color: Rgba8,
-    ) -> Cow<'a, ImageBuffer<Rgba<u8>, Vec<u8>>> {
-        let scale = PxScale::from(text.scale * 1.5);
+    ) -> Option<Cow<'a, ImageBuffer<Rgba<u8>, Vec<u8>>>> {
+        if text.text.len() < 1 {
+            return None;
+        }
+
+        let scale = PxScale {
+            x: text.scale.x,
+            y: text.scale.y,
+        };
 
         let scaled_font = self.fonts[text.font].as_scaled(scale);
 
@@ -103,7 +110,7 @@ impl TextFont {
             });
         }
 
-        Cow::Owned(image)
+        Some(Cow::Owned(image))
     }
 }
 
@@ -167,6 +174,7 @@ mod tests {
                     a: 255
                 }
             )
+            .expect("Message is none")
             .len()
                 > 0
         )

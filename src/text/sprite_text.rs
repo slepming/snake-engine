@@ -6,8 +6,7 @@ pub struct SpriteTextCreateInfo {
     /// Text which will be draw on the screen
     pub text: String,
     /// Character size
-    pub size: Vector,
-    pub scale: f32,
+    pub scale: Vector,
     /// Font index(temp)
     pub font: usize,
     /// Positional coordinates
@@ -30,12 +29,7 @@ impl SpriteTextCreateInfo {
         self
     }
 
-    pub fn with_size(mut self, size: Vector) -> Self {
-        self.size = size;
-        self
-    }
-
-    pub fn with_scale(mut self, s: f32) -> Self {
+    pub fn with_scale(mut self, s: Vector) -> Self {
         self.scale = s;
         self
     }
@@ -45,9 +39,8 @@ impl Default for SpriteTextCreateInfo {
     fn default() -> Self {
         Self {
             text: Default::default(),
-            size: Vector::new(15.0, 7.5),
+            scale: Vector::new(15.0, 7.5),
             font: 0,
-            scale: 15.0,
             position: Default::default(),
         }
     }
