@@ -7,6 +7,14 @@ use syn::{Error, Fields, Ident, ItemStruct, parse_macro_input, parse_quote};
 /// Creates fields and implementation automatically
 #[proc_macro_attribute]
 pub fn static_game_object(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Initially,
+    // this macros was
+    // like
+    // automatically
+    // filler for
+    // structures, but
+    // now this macros
+    // useless
     let mut item = parse_macro_input!(item as ItemStruct);
 
     let found_crate =
