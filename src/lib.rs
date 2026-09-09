@@ -5,7 +5,7 @@ pub use hecs::{CommandBuffer, Entity};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::{
     ops::RangeInclusive,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
 };
 use tracing::debug;
 
@@ -13,8 +13,8 @@ use vulkano::{
     Validated, VulkanError,
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo, SubpassBeginInfo,
-        SubpassContents,
+        AutoCommandBufferBuilder, CommandBufferInheritanceInfo, CommandBufferUsage,
+        RenderPassBeginInfo, SecondaryAutoCommandBuffer, SubpassBeginInfo, SubpassContents,
     },
     device::{Device, DeviceExtensions, Queue},
     image::{
@@ -60,7 +60,7 @@ use crate::{
     },
     mem::engine_memory::EngineMemory,
     render::{MeshBuffers, RenderContext},
-    res::cache::{CacheProvider, DescriptorSetCache, PipelineCache},
+    res::cache::CacheProvider,
     shaders::{
         circle_shader::{circle_fs, circle_vs},
         image_shader::{image_fs, image_vs},
@@ -129,9 +129,8 @@ pub struct EngineContext {
     debug: DebugUtils,
     #[allow(dead_code)]
     thread_pool: Arc<ThreadPool>,
-    pipelines: Arc<PipelineCache>,
-    descriptors: Arc<DescriptorSetCache>,
     pub scheduler: (Scheduler, Arc<SchedulerContext>),
+    secondary_command_buffers: Arc<Mutex<Vec<Arc<SecondaryAutoCommandBuffer>>>>,
 }
 
 impl EngineContext {
@@ -168,9 +167,6 @@ impl EngineContext {
         )
         .unwrap();
 
-        let descriptorset_cache = Arc::new(DescriptorSetCache::default());
-        let pipeline_cache = Arc::new(PipelineCache::default());
-
         let thread_pool = Arc::new(
             ThreadPoolBuilder::new()
                 .num_threads(THREAD_POOL_SIZE)
@@ -181,8 +177,8 @@ impl EngineContext {
         let game = GameContext::new(
             memory.clone(),
             queues.last().expect("queues size 0").clone(),
-            pipeline_cache.clone(),
-            descriptorset_cache.clone(),
+            memory.pipelines.clone(),
+            memory.descriptors.clone(),
             sampler.clone(),
             thread_pool.clone(),
         );
@@ -194,8 +190,6 @@ impl EngineContext {
 
         Self {
             game: game,
-            descriptors: descriptorset_cache.clone(),
-            pipelines: pipeline_cache.clone(),
             memory,
             instance,
             device,
@@ -205,6 +199,7 @@ impl EngineContext {
             debug,
             thread_pool,
             scheduler: create_scheduler(),
+            secondary_command_buffers: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -240,6 +235,58 @@ impl EngineContext {
                     a: 0,
                 },
             });
+    }
+
+    pub(crate) fn _draw_secondary_command_buffer(
+        &mut self,
+        constants: Constants,
+        shape_name: String,
+        class: ClassInfo,
+        vertex_cursor: u32,
+        vertex_count: u32,
+        queue_index: u32,
+    ) {
+        let command_buffer_allocator = self.memory.command_buffer_allocator.clone();
+        let pipeline_cache = self.memory.pipelines.clone();
+        let descriptor_set_cache = self.memory.descriptors.clone();
+        let command_buffers = self.secondary_command_buffers.clone();
+
+        let mut builder = AutoCommandBufferBuilder::secondary(
+            command_buffer_allocator,
+            queue_index,
+            CommandBufferUsage::OneTimeSubmit,
+            CommandBufferInheritanceInfo::default(),
+        )
+        .expect("Secondary buffer creating error");
+
+        let pipeline = pipeline_cache.get(&shape_name).unwrap();
+
+        let layout = pipeline.layout();
+        if !layout.push_constant_ranges().is_empty() {
+            builder
+                .push_constants(pipeline.layout().clone(), 0, constants)
+                .unwrap();
+        }
+
+        builder.bind_pipeline_graphics(pipeline.clone()).unwrap();
+        if let Some(desc) = descriptor_set_cache.get(&class.class_name) {
+            builder
+                .bind_descriptor_sets(
+                    vulkano::pipeline::PipelineBindPoint::Graphics,
+                    pipeline.layout().clone(),
+                    0,
+                    desc.clone(),
+                )
+                .unwrap();
+        }
+        unsafe {
+            builder.draw(vertex_count, 1, vertex_cursor, 0).unwrap();
+        }
+
+        command_buffers
+            .lock()
+            .unwrap()
+            .push(builder.build().unwrap());
     }
 }
 
@@ -503,11 +550,13 @@ impl ApplicationHandler for EngineContext {
             },
         );
 
-        self.pipelines
-            .insert(("circle".to_string(), circle_pipeline));
-        self.pipelines
-            .insert(("square".to_string(), square_pipeline));
-        self.pipelines.insert(("image".to_string(), image_pipeline));
+        let pipelines = self.memory.pipelines.clone();
+
+        pipelines.insert(("circle".to_string(), circle_pipeline));
+        pipelines.insert(("square".to_string(), square_pipeline));
+        pipelines.insert(("image".to_string(), image_pipeline));
+
+        drop(pipelines);
 
         self.scheduler.0.update();
 
@@ -548,7 +597,6 @@ impl ApplicationHandler for EngineContext {
         event: WindowEvent,
     ) {
         self.game.frames += 1;
-        let rcx = self.rcx.as_mut().unwrap();
         self.scheduler.0.update();
 
         match event {
@@ -560,7 +608,9 @@ impl ApplicationHandler for EngineContext {
             }
             WindowEvent::Resized(_) => {
                 let _span = tracy_client::span!("Engine::resize");
-                rcx.recreate_swapchain = true;
+                if let Some(rcx) = self.rcx.as_mut() {
+                    rcx.recreate_swapchain = true;
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
@@ -568,8 +618,8 @@ impl ApplicationHandler for EngineContext {
                         Key::Named(NamedKey::F2) => {
                             debug!("!!! DEBUG INFORMATION START !!!");
                             debug!(
-                                pipelines_count = self.pipelines.len(),
-                                descriptor_sets_count = self.descriptors.len(),
+                                pipelines_count = self.memory.pipelines.len(),
+                                descriptor_sets_count = self.memory.descriptors.len(),
                                 objects_count = self.game.world.read().unwrap().len(),
                                 frame_count = self.game.frames
                             );
@@ -596,7 +646,7 @@ impl ApplicationHandler for EngineContext {
             }
             WindowEvent::RedrawRequested => {
                 let _span = tracy_client::span!("Engine::update");
-                let window_size = rcx.window.inner_size();
+                let window_size = self.rcx.as_ref().unwrap().window.inner_size();
 
                 // Do not draw the frame when the screen size is zero. On Windows, this can occur
                 // when minimizing the application.
@@ -608,31 +658,43 @@ impl ApplicationHandler for EngineContext {
                 // will keep accumulating and you will eventually reach an out of memory error.
                 // Calling this function polls various fences in order to determine what the GPU
                 // has already processed, and frees the resources that are no longer needed.
-                rcx.previous_frame_end.as_mut().unwrap().cleanup_finished();
+                self.rcx
+                    .as_mut()
+                    .unwrap()
+                    .previous_frame_end
+                    .as_mut()
+                    .unwrap()
+                    .cleanup_finished();
 
                 // Whenever the window resizes we need to recreate everything dependent on the
                 // window size. In this example that includes the swapchain, the framebuffers and
                 // the dynamic state viewport.
-                if rcx.recreate_swapchain {
+                if self.rcx.as_ref().unwrap().recreate_swapchain {
                     // Use the new dimensions of the window.
 
-                    let (new_swapchain, new_images) = rcx
+                    let (new_swapchain, new_images) = self
+                        .rcx
+                        .as_ref()
+                        .unwrap()
                         .swapchain
                         .recreate(SwapchainCreateInfo {
                             image_extent: window_size.into(),
-                            ..rcx.swapchain.create_info()
+                            ..self.rcx.as_ref().unwrap().swapchain.create_info()
                         })
                         .expect("failed to recreate swapchain");
 
-                    rcx.swapchain = new_swapchain;
+                    self.rcx.as_mut().unwrap().swapchain = new_swapchain;
 
                     // Because framebuffers contains a reference to the old swapchain, we need to
                     // recreate framebuffers as well.
-                    rcx.framebuffers = window_size_dependent_setup(&new_images, &rcx.render_pass);
+                    self.rcx.as_mut().unwrap().framebuffers = window_size_dependent_setup(
+                        &new_images,
+                        &self.rcx.as_ref().unwrap().render_pass,
+                    );
 
-                    rcx.viewport.extent = window_size.into();
+                    self.rcx.as_mut().unwrap().viewport.extent = window_size.into();
 
-                    rcx.recreate_swapchain = false;
+                    self.rcx.as_mut().unwrap().recreate_swapchain = false;
                 }
 
                 // Before we can draw on the output, we have to *acquire* an image from the
@@ -644,19 +706,17 @@ impl ApplicationHandler for EngineContext {
                 // timeout after which the function call will return an error.
 
                 let span_acquire = tracy_client::span!("GPU: Acquire Next Image");
-                let (image_index, suboptimal, acquire_future) = match acquire_next_image(
-                    rcx.swapchain.clone(),
-                    None,
-                )
-                .map_err(Validated::unwrap)
-                {
-                    Ok(r) => r,
-                    Err(VulkanError::OutOfDate) => {
-                        rcx.recreate_swapchain = true;
-                        return;
-                    }
-                    Err(e) => panic!("failed to acquire next image: {e}"),
-                };
+                let (image_index, suboptimal, acquire_future) =
+                    match acquire_next_image(self.rcx.as_ref().unwrap().swapchain.clone(), None)
+                        .map_err(Validated::unwrap)
+                    {
+                        Ok(r) => r,
+                        Err(VulkanError::OutOfDate) => {
+                            self.rcx.as_mut().unwrap().recreate_swapchain = true;
+                            return;
+                        }
+                        Err(e) => panic!("failed to acquire next image: {e}"),
+                    };
 
                 drop(span_acquire);
 
@@ -665,7 +725,7 @@ impl ApplicationHandler for EngineContext {
                 // drivers this can be when the window resizes, but it may not cause the swapchain
                 // to become out of date.
                 if suboptimal {
-                    rcx.recreate_swapchain = true;
+                    self.rcx.as_mut().unwrap().recreate_swapchain = true;
                 }
 
                 let graphics_queue = self.queues.first().expect("Graphics queue not found");
@@ -701,7 +761,8 @@ impl ApplicationHandler for EngineContext {
                             clear_values: vec![Some([0.0, 0.0, 0.0, 0.0].into())],
 
                             ..RenderPassBeginInfo::framebuffer(
-                                rcx.framebuffers[image_index as usize].clone(),
+                                self.rcx.as_ref().unwrap().framebuffers[image_index as usize]
+                                    .clone(),
                             )
                         },
                         SubpassBeginInfo {
@@ -714,11 +775,19 @@ impl ApplicationHandler for EngineContext {
                     )
                     .unwrap()
                     // We are now inside the first subpass of the render pass.
-                    .set_viewport(0, [rcx.viewport.clone()].into_iter().collect())
+                    .set_viewport(
+                        0,
+                        [self.rcx.as_ref().unwrap().viewport.clone()]
+                            .into_iter()
+                            .collect(),
+                    )
                     .unwrap();
 
-                let (mesh_buffers, _children_size) =
-                    calculate_drawables(self.memory.memory_allocator.clone(), &mut self.game, rcx);
+                let (mesh_buffers, _children_size) = calculate_drawables(
+                    self.memory.memory_allocator.clone(),
+                    &mut self.game,
+                    self.rcx.as_mut().unwrap(),
+                );
 
                 if let Some(mesh) = mesh_buffers {
                     let _span_draw =
@@ -739,46 +808,24 @@ impl ApplicationHandler for EngineContext {
                         let colour = color;
                         let constants = Constants(
                             matrix,
-                            rcx.window.inner_size().into(),
+                            self.rcx.as_ref().unwrap().window.inner_size().into(),
                             (colour.r as u32)
                                 | (colour.g as u32) << 8
                                 | (colour.b as u32) << 16
                                 | (colour.a as u32) << 24,
                         );
 
-                        let pipeline = {
-                            let shape_name = shape.as_ref().to_lowercase();
-
-                            self.pipelines.get(&shape_name).expect("pipeline not found")
-                        };
-
-                        let layout = pipeline.layout();
-                        if !layout.push_constant_ranges().is_empty() {
-                            builder
-                                .push_constants(pipeline.layout().clone(), 0, constants)
-                                .unwrap();
-                        }
-
                         let vertex_cursor = mesh.2[id];
                         let vertex_count = SQUARE_VERTEX.len() as u32;
 
-                        builder.bind_pipeline_graphics(pipeline.clone()).unwrap();
-
-                        if let Some(desc) = self.descriptors.get(&class.class_name) {
-                            let _span_draw = tracy_client::span!("Engine: Getting descriptors");
-                            builder
-                                .bind_descriptor_sets(
-                                    vulkano::pipeline::PipelineBindPoint::Graphics,
-                                    pipeline.layout().clone(),
-                                    0,
-                                    desc.clone(),
-                                )
-                                .unwrap();
-                        }
-
-                        unsafe {
-                            builder.draw(vertex_count, 1, vertex_cursor, 0).unwrap();
-                        }
+                        self._draw_secondary_command_buffer(
+                            constants,
+                            shape.as_ref().to_lowercase(),
+                            class.clone(),
+                            vertex_cursor,
+                            vertex_count,
+                            self.queues.first().unwrap().queue_family_index(),
+                        );
                     }
                     self.game.world_buffer.buffer.run_on(&mut world);
                 }
@@ -795,7 +842,10 @@ impl ApplicationHandler for EngineContext {
                 drop(span_cmd);
 
                 let span_submit = tracy_client::span!("GPU: Submit & Present");
-                let future = rcx
+                let future = self
+                    .rcx
+                    .as_mut()
+                    .unwrap()
                     .previous_frame_end
                     .take()
                     .unwrap()
@@ -813,7 +863,7 @@ impl ApplicationHandler for EngineContext {
                     .then_swapchain_present(
                         graphics_queue.clone(),
                         SwapchainPresentInfo::swapchain_image_index(
-                            rcx.swapchain.clone(),
+                            self.rcx.as_ref().unwrap().swapchain.clone(),
                             image_index,
                         ),
                     )
@@ -821,9 +871,10 @@ impl ApplicationHandler for EngineContext {
 
                 match future.map_err(Validated::unwrap) {
                     Ok(future) => {
-                        rcx.previous_frame_end = Some(future.boxed());
+                        self.rcx.as_mut().unwrap().previous_frame_end = Some(future.boxed());
                     }
                     Err(VulkanError::OutOfDate) => {
+                        let rcx = self.rcx.as_mut().unwrap();
                         rcx.recreate_swapchain = true;
                         rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
                     }
