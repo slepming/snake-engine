@@ -98,7 +98,7 @@ pub mod utils;
 pub type Vector = glam::Vec2;
 pub type GameObjectDrawable = Arc<RwLock<Box<dyn GameObject>>>;
 
-const THREAD_POOL_SIZE: usize = 6;
+const THREAD_POOL_SIZE: usize = 3;
 
 #[global_allocator]
 #[cfg(debug_assertions)]

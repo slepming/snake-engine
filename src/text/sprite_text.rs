@@ -5,7 +5,7 @@ use crate::Vector;
 pub struct SpriteTextCreateInfo {
     /// Text which will be draw on the screen
     pub text: String,
-    /// Character size
+    /// Character scale
     pub scale: Vector,
     /// Font index(temp)
     pub font: usize,
@@ -39,7 +39,7 @@ impl Default for SpriteTextCreateInfo {
     fn default() -> Self {
         Self {
             text: Default::default(),
-            scale: Vector::new(15.0, 7.5),
+            scale: Vector::new(150.0, 150.0),
             font: 0,
             position: Default::default(),
         }
