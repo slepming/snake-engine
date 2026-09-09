@@ -76,6 +76,10 @@ use crate::{
 
 pub use snake_macros::{static_game_object, text_object};
 
+#[cfg(target_os = "linux")]
+#[cfg(not(debug_assertions))]
+use jemallocator::Jemalloc;
+
 //#[cfg(debug_assertions)]
 //use crate::testing::finder::Finder;
 
@@ -104,6 +108,11 @@ const THREAD_POOL_SIZE: usize = 3;
 #[cfg(debug_assertions)]
 static GLOBAL: tracy_client::ProfiledAllocator<std::alloc::System> =
     tracy_client::ProfiledAllocator::new(std::alloc::System, 5);
+
+#[cfg(target_os = "linux")]
+#[cfg(not(debug_assertions))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 /// The main entry point into the engine
 pub struct EngineContext {
