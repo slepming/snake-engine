@@ -4,10 +4,8 @@ use crate::{
     fnt::font::TextFont,
     game::GameObject,
     geom::{matrix::Transform, shapes::Shapes},
-    res::{
-        assets::TextureStorage,
-        cache::{DescriptorSetCache, PipelineCache},
-    },
+    mem::engine_memory::EngineMemory,
+    res::assets::TextureStorage,
 };
 use color::Rgba8;
 use hecs::CommandBuffer;
@@ -19,10 +17,7 @@ use std::{
     sync::Arc,
 };
 use tracing::debug;
-use vulkano::{
-    descriptor_set::allocator::DescriptorSetAllocator, image::sampler::Sampler,
-    memory::allocator::MemoryAllocator,
-};
+use vulkano::image::sampler::Sampler;
 
 pub type DynObject = Box<dyn DynamicallyObjectAlias>;
 
@@ -31,10 +26,7 @@ impl<T> DynamicallyObjectAlias for T where T: GameObject + Send + Sync {}
 
 pub struct EntityComponent {
     pub(crate) buffer: CommandBuffer,
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    descriptor_allocator: Arc<dyn DescriptorSetAllocator>,
-    descriptor_cache: Arc<DescriptorSetCache>,
-    pipeline_cache: Arc<PipelineCache>,
+    memory: Arc<EngineMemory>,
     thread_pool: Arc<ThreadPool>,
     sampler: Arc<Sampler>,
     fonts: Arc<TextFont>,
@@ -43,10 +35,7 @@ pub struct EntityComponent {
 
 impl EntityComponent {
     pub(crate) fn new(
-        memory_allocator: Arc<dyn MemoryAllocator>,
-        descriptor_allocator: Arc<dyn DescriptorSetAllocator>,
-        descriptor_cache: Arc<DescriptorSetCache>,
-        pipeline_cache: Arc<PipelineCache>,
+        memory: Arc<EngineMemory>,
         sampler: Arc<Sampler>,
         thread_pool: Arc<ThreadPool>,
         fonts: Arc<TextFont>,
@@ -54,10 +43,7 @@ impl EntityComponent {
     ) -> Self {
         Self {
             buffer: CommandBuffer::new(),
-            memory_allocator,
-            descriptor_allocator,
-            descriptor_cache,
-            pipeline_cache,
+            memory,
             sampler,
             thread_pool,
             fonts,
@@ -137,10 +123,10 @@ impl EntityComponent {
     ) {
         debug!("{:?}", class);
 
-        let memory_allocator = self.memory_allocator.clone();
-        let descriptor_set_allocator = self.descriptor_allocator.clone();
-        let descriptor_set_cache = self.descriptor_cache.clone();
-        let pipeline_cache = self.pipeline_cache.clone();
+        let memory_allocator = self.memory.memory_allocator.clone();
+        let descriptor_set_allocator = self.memory.descriptor_allocator.clone();
+        let descriptor_set_cache = self.memory.descriptors.clone();
+        let pipeline_cache = self.memory.pipelines.clone();
         let sampler = Some(self.sampler.clone());
 
         let descriptor_id = DescriptorID::from(&class);
@@ -186,10 +172,10 @@ impl EntityComponent {
 
         shape.create_descriptor(
             DescriptorID::from(&class),
-            self.memory_allocator.clone(),
-            self.descriptor_allocator.clone(),
-            self.descriptor_cache.clone(),
-            self.pipeline_cache.clone(),
+            self.memory.memory_allocator.clone(),
+            self.memory.descriptor_allocator.clone(),
+            self.memory.descriptors.clone(),
+            self.memory.pipelines.clone(),
             Some(self.sampler.clone()),
         );
 
@@ -207,7 +193,7 @@ impl EntityComponent {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClassInfo {
     pub type_id: TypeId,
     pub class_name: String,

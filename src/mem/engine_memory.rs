@@ -7,12 +7,16 @@ use vulkano::{
     memory::allocator::{GenericMemoryAllocatorCreateInfo, StandardMemoryAllocator},
 };
 
+use crate::res::cache::{DescriptorSetCache, PipelineCache};
+
 /// Engine memory allocators storage
 pub(crate) struct EngineMemory {
     pub command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     pub memory_allocator: Arc<StandardMemoryAllocator>,
     #[allow(dead_code)]
     pub descriptor_allocator: Arc<StandardDescriptorSetAllocator>,
+    pub pipelines: Arc<PipelineCache>,
+    pub descriptors: Arc<DescriptorSetCache>,
 }
 
 impl EngineMemory {
@@ -49,6 +53,8 @@ impl EngineMemory {
             descriptor_allocator: descriptor_set_allocator,
             command_buffer_allocator,
             memory_allocator,
+            descriptors: Arc::new(DescriptorSetCache::default()),
+            pipelines: Arc::new(PipelineCache::default()),
         }
     }
 }
