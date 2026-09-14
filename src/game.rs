@@ -15,10 +15,7 @@ use crate::{
     fnt::font::TextFont,
     geom::{matrix::Transform, shapes::ShapeCreateInfo},
     mem::engine_memory::EngineMemory,
-    res::{
-        assets::TextureStorage,
-        cache::{DescriptorSetCache, PipelineCache},
-    },
+    res::assets::TextureStorage,
 };
 
 use color::Rgba8;
@@ -42,8 +39,6 @@ impl GameContext {
     pub fn new(
         memory: Arc<EngineMemory>,
         queue: Arc<Queue>,
-        pipelines: Arc<PipelineCache>,
-        descriptors: Arc<DescriptorSetCache>,
         sampler: Arc<Sampler>,
         thread_pool: Arc<ThreadPool>,
     ) -> Self {
@@ -57,10 +52,7 @@ impl GameContext {
         });
 
         let world_buffer = EntityComponent::new(
-            memory.memory_allocator.clone(),
-            memory.descriptor_allocator.clone(),
-            descriptors.clone(),
-            pipelines.clone(),
+            memory.clone(),
             sampler.clone(),
             thread_pool,
             fonts.clone(),

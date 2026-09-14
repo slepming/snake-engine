@@ -177,8 +177,6 @@ impl EngineContext {
         let game = GameContext::new(
             memory.clone(),
             queues.last().expect("queues size 0").clone(),
-            memory.pipelines.clone(),
-            memory.descriptors.clone(),
             sampler.clone(),
             thread_pool.clone(),
         );
@@ -818,8 +816,9 @@ impl ApplicationHandler for EngineContext {
                         let vertex_cursor = mesh.2[id];
                         let vertex_count = SQUARE_VERTEX.len() as u32;
 
-                        self._draw_secondary_command_buffer(
+                        self.game.world_buffer._draw_secondary_command_buffer(
                             constants,
+                            self.secondary_command_buffers.clone(),
                             shape.as_ref().to_lowercase(),
                             class.clone(),
                             vertex_cursor,
