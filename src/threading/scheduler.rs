@@ -31,7 +31,7 @@ impl SchedulerContext {
     /// Adds task to execute
     ///
     /// # Parameters
-    /// [`Task`] - Boxed closure with job
+    /// [`Box<dyn FnOnce() + Send>`] - Boxed closure with job
     pub fn add(&self, task: Task) {
         let _ = self.sender.send(task);
     }

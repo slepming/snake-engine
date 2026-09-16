@@ -64,9 +64,11 @@ impl TextureStorage {
     /// Load texture to texture pool. You can save to the pool in advance.
     ///
     /// # Note
-    /// If you use this function right before [`load_and_get_texture`]
-    ///  you're texture will be load from [`load_and_get_texture`] function synchronously.
+    /// If you use this function right before [`load_texture_handler`]
+    ///  you're texture will be load from [`load_texture_handler`] function synchronously.
     /// It's happening because OS scheduler gives the ability to start job for another thread too long.
+    ///
+    /// [`load_texture_handler`]: TextureStorage::load_texture_handler
     pub fn load_and_save_texture(self: Arc<Self>, file_name: &'static Path, internal: bool) {
         let file = file_name.file_name().unwrap().to_string_lossy().to_string();
         let file_name = file_name.to_str().unwrap();
