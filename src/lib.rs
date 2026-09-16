@@ -566,8 +566,8 @@ impl ApplicationHandler for EngineContext {
                             );
                             debug!("!!! DEBUG INFORMATION END !!!");
                         }
-                        //#[cfg(debug_assertions)]
-                        //Key::Named(NamedKey::F1) => {
+                        #[cfg(debug_assertions)]
+                        Key::Named(NamedKey::F1) => {
                         //    debug!("Drawable calculation positions started");
                         //    if let Some(cursor) = self.game.mouse_position {
                         //        let drawables = self.game.children.get_by_position(cursor);
@@ -580,7 +580,7 @@ impl ApplicationHandler for EngineContext {
                         //        }
                         //    }
                         //    debug!("Drawable calculation positions finished");
-                        //}
+                        }
                         _ => {}
                     }
                 }
