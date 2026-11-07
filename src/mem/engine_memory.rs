@@ -43,7 +43,10 @@ impl EngineMemory {
         // pools underneath and provides a safe interface for them.
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
             device.clone(),
-            Default::default(),
+            vulkano::command_buffer::allocator::StandardCommandBufferAllocatorCreateInfo {
+                secondary_buffer_count: 8,
+                ..Default::default()
+            },
         ));
         let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
             device.clone(),
