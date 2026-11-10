@@ -26,7 +26,7 @@ use vulkano::{
         vertex_input::Vertex,
         viewport::Viewport,
     },
-    render_pass::Subpass,
+    render_pass::{Framebuffer, Subpass},
     swapchain::{
         CompositeAlpha, Surface, SurfaceInfo, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
         acquire_next_image,
@@ -58,7 +58,7 @@ use crate::{
     render::{MeshBuffers, RenderContext},
     res::cache::CacheProvider,
     text::sprite_text::SpriteTextCreateInfo,
-    threading::scheduler::{Scheduler, SchedulerContext, create_scheduler},
+    thread::scheduler::{Scheduler, SchedulerContext, create_scheduler},
     utils::{
         vulkan::{
             SecondaryBufferBuilderCreateInfo, add_shaders, get_vulkan_instance, secondary_buffer_create, select_render_device
@@ -89,7 +89,7 @@ pub mod res;
 pub mod shaders;
 pub mod testing;
 pub mod text;
-pub mod threading;
+pub mod thread;
 pub mod utils;
 
 pub type Vector = glam::Vec2;
@@ -229,6 +229,88 @@ impl EngineContext {
                     a: 0,
                 },
             });
+    }
+
+    fn draw(&mut self, viewport: Viewport, current_framebuffer: Arc<Framebuffer>) -> Vec<Arc<dyn SecondaryCommandBufferAbstract>> {
+        let (mesh_buffers, _children_size) = calculate_drawables(
+            self.memory.memory_allocator.clone(),
+            &mut self.game,
+            self.rcx.as_mut().unwrap(),
+        );
+
+        let current_queue = self.current_queue.clone();
+        let _secondary_command_buffers_vec = self.secondary_command_buffers.clone();
+        let pipeline_cache = self.memory.pipelines.clone();
+        let descriptor_cache = self.memory.descriptors.clone();
+        let command_buffer_allocator = self.memory.command_buffer_allocator.clone();
+
+        let render_pass = self.rcx.as_ref().unwrap().render_pass.clone();
+        let subpass = Subpass::from(render_pass, 0).unwrap();
+
+        let mut secondary_buffers: Vec<Arc<dyn SecondaryCommandBufferAbstract>> =
+            Vec::with_capacity(20);
+
+        if let Some(mesh) = mesh_buffers {
+            let _span_draw =
+                tracy_client::span!("Engine:: Preparing Objects for Rendering");
+            let vertex_buffer = mesh.0;
+            let matrices = mesh.1;
+            let vertex_cursors = mesh.2;
+            //builder.bind_vertex_buffers(0, mesh.0).unwrap();
+
+            let mut world = self.game.world.write().unwrap();
+
+            for (id, (class, shape, entity, color)) in world
+                .query_mut::<(hecs::Entity, (&ClassInfo, &Shapes, &mut DynObject, &Rgba8))>(
+                )
+            {
+                let _span_draw = tracy_client::span!("Engine: Draw Item");
+                let id = id.id() as usize - 1;
+                entity.update(&mut self.game.world_buffer);
+
+                let matrix = matrices[id];
+                let colour = color;
+                let constants = Constants(
+                    matrix,
+                    self.rcx.as_ref().unwrap().window.inner_size().into(),
+                    (colour.r as u32)
+                        | (colour.g as u32) << 8
+                        | (colour.b as u32) << 16
+                        | (colour.a as u32) << 24,
+                );
+
+                let vertex_cursor = vertex_cursors[id];
+                let vertex_count = SQUARE_VERTEX.len() as u32;
+
+                let sec_buffer_build_create_info = SecondaryBufferBuilderCreateInfo {
+                    shape_name: shape.as_ref().to_lowercase(),
+                    command_buffer_allocator: command_buffer_allocator.clone(),
+                    pipeline_cache: pipeline_cache.clone(),
+                    descriptor_set_cache: descriptor_cache.clone(),
+                    descriptor_key: class.class_name.clone(),
+                    constants: constants,
+                    vertex_count: vertex_count,
+                    vertex_cursor: vertex_cursor,
+                    framebuffer: current_framebuffer.clone(),
+                };
+
+                let buffer = secondary_buffer_create::<Constants>(
+                    sec_buffer_build_create_info,
+                    vertex_buffer.clone(),
+                    viewport.clone(),
+                    subpass.clone(),
+                    current_queue.clone().queue_family_index(),
+                );
+
+                match buffer {
+                    Ok(buf) => secondary_buffers.push(buf),
+                    Err(e) => error!("Creating secondary command buffer error {}", e),
+                }
+            }
+            self.game.world_buffer.buffer.run_on(&mut world);
+        }
+
+        secondary_buffers
     }
 }
 
@@ -652,83 +734,7 @@ impl ApplicationHandler for EngineContext {
                     )
                     .unwrap(); // Between begin render pass and end render pass with SubpassContents::SecondaryCommandBuffers vulkan restrict any commands(excepion it's a command `execute_commands`).
 
-                let (mesh_buffers, _children_size) = calculate_drawables(
-                    self.memory.memory_allocator.clone(),
-                    &mut self.game,
-                    self.rcx.as_mut().unwrap(),
-                );
-
-                let current_queue = self.current_queue.clone();
-                let _secondary_command_buffers_vec = self.secondary_command_buffers.clone();
-                let pipeline_cache = self.memory.pipelines.clone();
-                let descriptor_cache = self.memory.descriptors.clone();
-                let command_buffer_allocator = self.memory.command_buffer_allocator.clone();
-
-                let render_pass = self.rcx.as_ref().unwrap().render_pass.clone();
-                let subpass = Subpass::from(render_pass, 0).unwrap();
-
-                let mut secondary_buffers: Vec<Arc<dyn SecondaryCommandBufferAbstract>> =
-                    Vec::with_capacity(20);
-
-                if let Some(mesh) = mesh_buffers {
-                    let _span_draw =
-                        tracy_client::span!("Engine:: Preparing Objects for Rendering");
-                    let vertex_buffer = mesh.0;
-                    let matrices = mesh.1;
-                    let vertex_cursors = mesh.2;
-                    //builder.bind_vertex_buffers(0, mesh.0).unwrap();
-
-                    let mut world = self.game.world.write().unwrap();
-
-                    for (id, (class, shape, entity, color)) in world
-                        .query_mut::<(hecs::Entity, (&ClassInfo, &Shapes, &mut DynObject, &Rgba8))>(
-                        )
-                    {
-                        let _span_draw = tracy_client::span!("Engine: Draw Item");
-                        let id = id.id() as usize - 1;
-                        entity.update(&mut self.game.world_buffer);
-
-                        let matrix = matrices[id];
-                        let colour = color;
-                        let constants = Constants(
-                            matrix,
-                            self.rcx.as_ref().unwrap().window.inner_size().into(),
-                            (colour.r as u32)
-                                | (colour.g as u32) << 8
-                                | (colour.b as u32) << 16
-                                | (colour.a as u32) << 24,
-                        );
-
-                        let vertex_cursor = vertex_cursors[id];
-                        let vertex_count = SQUARE_VERTEX.len() as u32;
-
-                        let sec_buffer_build_create_info = SecondaryBufferBuilderCreateInfo {
-                            shape_name: shape.as_ref().to_lowercase(),
-                            command_buffer_allocator: command_buffer_allocator.clone(),
-                            pipeline_cache: pipeline_cache.clone(),
-                            descriptor_set_cache: descriptor_cache.clone(),
-                            descriptor_key: class.class_name.clone(),
-                            constants: constants,
-                            vertex_count: vertex_count,
-                            vertex_cursor: vertex_cursor,
-                            framebuffer: current_framebuffer.clone(),
-                        };
-
-                        let buffer = secondary_buffer_create::<Constants>(
-                            sec_buffer_build_create_info,
-                            vertex_buffer.clone(),
-                            viewport.clone(),
-                            subpass.clone(),
-                            current_queue.clone().queue_family_index(),
-                        );
-
-                        match buffer {
-                            Ok(buf) => secondary_buffers.push(buf),
-                            Err(e) => error!("Creating secondary command buffer error {}", e),
-                        }
-                    }
-                    self.game.world_buffer.buffer.run_on(&mut world);
-                }
+                let secondary_buffers = self.draw(viewport, current_framebuffer);
 
                 builder
                     .execute_commands_from_vec(secondary_buffers).unwrap()
