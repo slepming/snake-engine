@@ -3,51 +3,38 @@ use std::sync::Arc;
 use tracing::{debug, info};
 use vulkano::{
     VulkanLibrary,
-    buffer::BufferContents,
-    command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferInheritanceInfo,
-        CommandBufferInheritanceRenderPassInfo, CommandBufferInheritanceRenderPassType,
-        CommandBufferUsage, allocator::StandardCommandBufferAllocator,
-    },
     device::{
         Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags,
         physical::PhysicalDeviceType,
     },
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
     pipeline::{
-        DynamicState, GraphicsPipeline, Pipeline, PipelineLayout, PipelineShaderStageCreateInfo,
+        DynamicState, GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
             color_blend::{AttachmentBlend, ColorBlendAttachmentState, ColorBlendState},
             input_assembly::{InputAssemblyState, PrimitiveTopology},
             multisample::MultisampleState,
             rasterization::RasterizationState,
-            vertex_input::{Vertex, VertexBuffersCollection, VertexDefinition},
-            viewport::{Viewport, ViewportState},
+            vertex_input::{Vertex, VertexDefinition},
+            viewport::ViewportState,
         },
         layout::PipelineDescriptorSetLayoutCreateInfo,
     },
-    render_pass::{Framebuffer, RenderPass, Subpass},
+    render_pass::{RenderPass, Subpass},
     swapchain::Surface,
 };
 use winit::raw_window_handle::HasDisplayHandle;
 
 use crate::{
     SnakeVertex,
-    res::cache::{CacheProvider, DescriptorSetCache, PipelineCache}, shaders::{circle_shader::{circle_fs, circle_vs}, image_shader::{image_fs, image_vs}, square_shader::{square_fs, square_vs}},
+    res::cache::{CacheProvider, PipelineCache},
+    shaders::{
+        circle_shader::{circle_fs, circle_vs},
+        image_shader::{image_fs, image_vs},
+        square_shader::{square_fs, square_vs},
+    },
 };
-
-pub(crate) struct SecondaryBufferBuilderCreateInfo<Pc> {
-    pub shape_name: String,
-    pub command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
-    pub pipeline_cache: Arc<PipelineCache>,
-    pub descriptor_set_cache: Arc<DescriptorSetCache>,
-    pub descriptor_key: String,
-    pub constants: Pc,
-    pub vertex_count: u32,
-    pub vertex_cursor: u32,
-    pub framebuffer: Arc<Framebuffer>,
-}
 
 pub fn select_render_device(
     instance: Arc<Instance>,
@@ -293,79 +280,6 @@ pub(crate) fn get_vulkan_instance(
 
     instance
 }
-
-pub(crate) fn secondary_buffer_create<Pc>(
-    cmd: SecondaryBufferBuilderCreateInfo<Pc>,
-    vertex_buffer: impl VertexBuffersCollection,
-    viewport: Viewport,
-    subpass: Subpass,
-    queue_index: u32,
-) -> Result<
-    Arc<vulkano::command_buffer::SecondaryAutoCommandBuffer>,
-    vulkano::Validated<vulkano::VulkanError>,
->
-where
-    Pc: BufferContents,
-{
-    let command_buffer_allocator = cmd.command_buffer_allocator.clone();
-    let pipeline_cache = cmd.pipeline_cache.clone();
-    let descriptor_set_cache = cmd.descriptor_set_cache.clone();
-
-    let mut builder = AutoCommandBufferBuilder::secondary(
-        command_buffer_allocator,
-        queue_index,
-        CommandBufferUsage::OneTimeSubmit,
-        CommandBufferInheritanceInfo {
-            render_pass: Some(CommandBufferInheritanceRenderPassType::BeginRenderPass(
-                CommandBufferInheritanceRenderPassInfo {
-                    subpass,
-                    framebuffer: Some(cmd.framebuffer.clone()),
-                },
-            )),
-            ..Default::default()
-        },
-    )
-    .expect("Secondary buffer creating error");
-
-    let pipeline = pipeline_cache.get(&cmd.shape_name).unwrap();
-
-    let layout = pipeline.layout();
-    if !layout.push_constant_ranges().is_empty() {
-        builder
-            .push_constants(pipeline.layout().clone(), 0, cmd.constants)
-            .unwrap();
-    }
-
-    builder.bind_pipeline_graphics(pipeline.clone()).unwrap();
-    if let Some(desc) = descriptor_set_cache.get(&cmd.descriptor_key) {
-        builder
-            .bind_descriptor_sets(
-                vulkano::pipeline::PipelineBindPoint::Graphics,
-                pipeline.layout().clone(),
-                0,
-                desc.clone(),
-            )
-            .unwrap();
-    }
-
-    builder
-        .bind_pipeline_graphics(pipeline.clone())
-        .unwrap()
-        .set_viewport(0, [viewport].into_iter().collect())
-        .unwrap()
-        .bind_vertex_buffers(0, vertex_buffer)
-        .unwrap();
-
-    unsafe {
-        builder
-            .draw(cmd.vertex_count, 1, cmd.vertex_cursor, 0)
-            .unwrap();
-    }
-
-    builder.build()
-}
-
-
 
 pub(crate) fn add_shaders(
     pipelines: Arc<PipelineCache>,

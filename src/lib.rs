@@ -2,18 +2,18 @@
 
 pub use color::Rgba8;
 pub use hecs::{CommandBuffer, Entity};
-use rayon::{ThreadPool, ThreadPoolBuilder};
+use rayon::{ThreadPool, ThreadPoolBuilder, iter::ParallelIterator, slice::ParallelSlice};
 use std::{
     ops::RangeInclusive,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, RwLock},
 };
-use tracing::{debug, error};
+use tracing::debug;
 
 use vulkano::{
     Validated, VulkanError,
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo, SecondaryAutoCommandBuffer, SecondaryCommandBufferAbstract, SubpassBeginInfo, SubpassContents, SubpassEndInfo
+        AutoCommandBufferBuilder, CommandBufferInheritanceInfo, CommandBufferInheritanceRenderPassInfo, CommandBufferInheritanceRenderPassType, CommandBufferUsage, RenderPassBeginInfo,  SecondaryCommandBufferAbstract, SubpassBeginInfo, SubpassContents, SubpassEndInfo
     },
     device::{Device, DeviceExtensions, Queue},
     image::{
@@ -22,10 +22,7 @@ use vulkano::{
     },
     instance::Instance,
     memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryTypeFilter},
-    pipeline::graphics::{
-        vertex_input::Vertex,
-        viewport::Viewport,
-    },
+    pipeline::{Pipeline, graphics::{vertex_input::Vertex, viewport::Viewport}},
     render_pass::{Framebuffer, Subpass},
     swapchain::{
         CompositeAlpha, Surface, SurfaceInfo, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
@@ -60,9 +57,7 @@ use crate::{
     text::sprite_text::SpriteTextCreateInfo,
     thread::scheduler::{Scheduler, SchedulerContext, create_scheduler},
     utils::{
-        vulkan::{
-            SecondaryBufferBuilderCreateInfo, add_shaders, get_vulkan_instance, secondary_buffer_create, select_render_device
-        },
+        vulkan::{add_shaders, get_vulkan_instance, select_render_device},
         window::window_size_dependent_setup,
     },
 };
@@ -95,7 +90,7 @@ pub mod utils;
 pub type Vector = glam::Vec2;
 pub type GameObjectDrawable = Arc<RwLock<Box<dyn GameObject>>>;
 
-const THREAD_POOL_SIZE: usize = 3;
+const THREAD_POOL_SIZE: usize = 12;
 
 #[global_allocator]
 #[cfg(debug_assertions)]
@@ -125,7 +120,6 @@ pub struct EngineContext {
     #[allow(dead_code)]
     thread_pool: Arc<ThreadPool>,
     pub scheduler: (Scheduler, Arc<SchedulerContext>),
-    secondary_command_buffers: Arc<Mutex<Vec<Arc<SecondaryAutoCommandBuffer>>>>,
 }
 
 impl EngineContext {
@@ -193,7 +187,6 @@ impl EngineContext {
             debug,
             thread_pool,
             scheduler: create_scheduler(),
-            secondary_command_buffers: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -231,7 +224,11 @@ impl EngineContext {
             });
     }
 
-    fn draw(&mut self, viewport: Viewport, current_framebuffer: Arc<Framebuffer>) -> Vec<Arc<dyn SecondaryCommandBufferAbstract>> {
+    fn draw(
+        &mut self,
+        viewport: Viewport,
+        current_framebuffer: Arc<Framebuffer>,
+    ) -> Vec<Arc<dyn SecondaryCommandBufferAbstract>> {
         let (mesh_buffers, _children_size) = calculate_drawables(
             self.memory.memory_allocator.clone(),
             &mut self.game,
@@ -239,7 +236,6 @@ impl EngineContext {
         );
 
         let current_queue = self.current_queue.clone();
-        let _secondary_command_buffers_vec = self.secondary_command_buffers.clone();
         let pipeline_cache = self.memory.pipelines.clone();
         let descriptor_cache = self.memory.descriptors.clone();
         let command_buffer_allocator = self.memory.command_buffer_allocator.clone();
@@ -247,12 +243,13 @@ impl EngineContext {
         let render_pass = self.rcx.as_ref().unwrap().render_pass.clone();
         let subpass = Subpass::from(render_pass, 0).unwrap();
 
-        let mut secondary_buffers: Vec<Arc<dyn SecondaryCommandBufferAbstract>> =
-            Vec::with_capacity(20);
+        let current_index = current_queue.clone().queue_family_index();
+
+        let buffers: Arc<RwLock<Vec<Arc<dyn SecondaryCommandBufferAbstract>>>> =
+            Arc::new(RwLock::new(Vec::with_capacity(THREAD_POOL_SIZE)));
 
         if let Some(mesh) = mesh_buffers {
-            let _span_draw =
-                tracy_client::span!("Engine:: Preparing Objects for Rendering");
+            let _span_draw = tracy_client::span!("Engine:: Preparing Objects for Rendering");
             let vertex_buffer = mesh.0;
             let matrices = mesh.1;
             let vertex_cursors = mesh.2;
@@ -260,57 +257,103 @@ impl EngineContext {
 
             let mut world = self.game.world.write().unwrap();
 
-            for (id, (class, shape, entity, color)) in world
-                .query_mut::<(hecs::Entity, (&ClassInfo, &Shapes, &mut DynObject, &Rgba8))>(
-                )
-            {
-                let _span_draw = tracy_client::span!("Engine: Draw Item");
-                let id = id.id() as usize - 1;
-                entity.update(&mut self.game.world_buffer);
+            let window_size: [f32; 2] = self.rcx.as_ref().unwrap().window.inner_size().into();
 
-                let matrix = matrices[id];
-                let colour = color;
-                let constants = Constants(
-                    matrix,
-                    self.rcx.as_ref().unwrap().window.inner_size().into(),
-                    (colour.r as u32)
-                        | (colour.g as u32) << 8
-                        | (colour.b as u32) << 16
-                        | (colour.a as u32) << 24,
-                );
+            let world_len = world.len();
 
-                let vertex_cursor = vertex_cursors[id];
-                let vertex_count = SQUARE_VERTEX.len() as u32;
+            let mut result_buffers: Vec<Arc<dyn SecondaryCommandBufferAbstract>> = world
+                .query::<(hecs::Entity, (&ClassInfo, &Shapes, &mut DynObject, &Rgba8))>()
+                .iter()
+                .collect::<Vec<_>>()
+                .par_chunks(world_len as usize / THREAD_POOL_SIZE)
+                .map(|chunk| {
+                    let mut builder = AutoCommandBufferBuilder::secondary(
+                        command_buffer_allocator.clone(),
+                        current_index,
+                        CommandBufferUsage::OneTimeSubmit,
+                        CommandBufferInheritanceInfo {
+                            render_pass: Some(
+                                CommandBufferInheritanceRenderPassType::BeginRenderPass(
+                                    CommandBufferInheritanceRenderPassInfo {
+                                        subpass: subpass.clone(),
+                                        framebuffer: Some(current_framebuffer.clone()),
+                                    },
+                                ),
+                            ),
+                            ..Default::default()
+                        },
+                    ).expect("Secondary buffer creating error");
 
-                let sec_buffer_build_create_info = SecondaryBufferBuilderCreateInfo {
-                    shape_name: shape.as_ref().to_lowercase(),
-                    command_buffer_allocator: command_buffer_allocator.clone(),
-                    pipeline_cache: pipeline_cache.clone(),
-                    descriptor_set_cache: descriptor_cache.clone(),
-                    descriptor_key: class.class_name.clone(),
-                    constants: constants,
-                    vertex_count: vertex_count,
-                    vertex_cursor: vertex_cursor,
-                    framebuffer: current_framebuffer.clone(),
-                };
+                    for obj in chunk {
+                        let _span_draw = tracy_client::span!("Engine: Draw Item");
+                        let id = obj.0.id() as usize - 1;
 
-                let buffer = secondary_buffer_create::<Constants>(
-                    sec_buffer_build_create_info,
-                    vertex_buffer.clone(),
-                    viewport.clone(),
-                    subpass.clone(),
-                    current_queue.clone().queue_family_index(),
-                );
+                        let matrix = matrices[id].clone();
 
-                match buffer {
-                    Ok(buf) => secondary_buffers.push(buf),
-                    Err(e) => error!("Creating secondary command buffer error {}", e),
-                }
-            }
+                        let colour = obj.1.3;
+                        let constants = Constants(
+                            matrix,
+                            window_size.clone(),
+                            (colour.r as u32)
+                                | (colour.g as u32) << 8
+                                | (colour.b as u32) << 16
+                                | (colour.a as u32) << 24,
+                        );
+
+                        let vertex_count = SQUARE_VERTEX.len() as u32;
+                        let vertex_cursor = vertex_cursors[id];
+                        
+                        //entity.update(&mut self.game.world_buffer);
+                        
+                        let pipeline = pipeline_cache.get(&obj.1.1.as_ref().to_ascii_lowercase()).expect("Pipeline not found");
+
+                        let layout = pipeline.layout();
+
+                        if !layout.push_constant_ranges().is_empty() {
+                            builder
+                                .push_constants(pipeline.layout().clone(), 0, constants)
+                                .unwrap();
+                        }
+
+                        builder.bind_pipeline_graphics(pipeline.clone()).unwrap();
+                        if let Some(desc) = descriptor_cache.get(&obj.1.0.class_name) {
+                            builder
+                                .bind_descriptor_sets(
+                                    vulkano::pipeline::PipelineBindPoint::Graphics,
+                                    pipeline.layout().clone(),
+                                    0,
+                                    desc.clone(),
+                                )
+                                .unwrap();
+                        }
+
+                        builder
+                            .bind_pipeline_graphics(pipeline.clone())
+                            .unwrap()
+                            .set_viewport(0, [viewport.clone()].into_iter().collect())
+                            .unwrap()
+                            .bind_vertex_buffers(0, vertex_buffer.clone())
+                            .unwrap();
+
+                        unsafe {
+                            builder
+                                .draw(vertex_count, 1, vertex_cursor, 0)
+                                .unwrap();
+                        }
+                    }
+
+                    builder.build().unwrap() as Arc<dyn SecondaryCommandBufferAbstract>
+                }).collect();
+
+            buffers.write().unwrap().append(&mut result_buffers);
             self.game.world_buffer.buffer.run_on(&mut world);
         }
 
-        secondary_buffers
+        buffers
+            .write()
+            .unwrap()
+            .drain(..)
+            .collect()
     }
 }
 
@@ -737,7 +780,8 @@ impl ApplicationHandler for EngineContext {
                 let secondary_buffers = self.draw(viewport, current_framebuffer);
 
                 builder
-                    .execute_commands_from_vec(secondary_buffers).unwrap()
+                    .execute_commands_from_vec(secondary_buffers)
+                    .unwrap()
                     // We leave the render pass. Note that if we had multiple subpasses we could
                     // have called `next_subpass` to jump to the next subpass.
                     .end_render_pass(SubpassEndInfo::default())
