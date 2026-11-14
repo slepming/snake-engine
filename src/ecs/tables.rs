@@ -1,13 +1,11 @@
 use crate::{
-    RenderGameObject, RenderText,
+    Constants, RenderGameObject, RenderText,
     drw::drawable::DescriptorID,
     fnt::font::TextFont,
     game::GameObject,
     geom::{matrix::Transform, shapes::Shapes},
-    res::{
-        assets::TextureStorage,
-        cache::{DescriptorSetCache, PipelineCache},
-    },
+    mem::engine_memory::EngineMemory,
+    res::{assets::TextureStorage, cache::CacheProvider},
 };
 use color::Rgba8;
 use hecs::CommandBuffer;
@@ -16,12 +14,16 @@ use rayon::ThreadPool;
 use std::{
     any::{TypeId, type_name},
     io::Cursor,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use tracing::debug;
 use vulkano::{
-    descriptor_set::allocator::DescriptorSetAllocator, image::sampler::Sampler,
-    memory::allocator::MemoryAllocator,
+    command_buffer::{
+        AutoCommandBufferBuilder, CommandBufferInheritanceInfo, CommandBufferUsage,
+        SecondaryAutoCommandBuffer,
+    },
+    image::sampler::Sampler,
+    pipeline::Pipeline,
 };
 
 pub type DynObject = Box<dyn DynamicallyObjectAlias>;
@@ -31,10 +33,7 @@ impl<T> DynamicallyObjectAlias for T where T: GameObject + Send + Sync {}
 
 pub struct EntityComponent {
     pub(crate) buffer: CommandBuffer,
-    memory_allocator: Arc<dyn MemoryAllocator>,
-    descriptor_allocator: Arc<dyn DescriptorSetAllocator>,
-    descriptor_cache: Arc<DescriptorSetCache>,
-    pipeline_cache: Arc<PipelineCache>,
+    memory: Arc<EngineMemory>,
     thread_pool: Arc<ThreadPool>,
     sampler: Arc<Sampler>,
     fonts: Arc<TextFont>,
@@ -43,10 +42,7 @@ pub struct EntityComponent {
 
 impl EntityComponent {
     pub(crate) fn new(
-        memory_allocator: Arc<dyn MemoryAllocator>,
-        descriptor_allocator: Arc<dyn DescriptorSetAllocator>,
-        descriptor_cache: Arc<DescriptorSetCache>,
-        pipeline_cache: Arc<PipelineCache>,
+        memory: Arc<EngineMemory>,
         sampler: Arc<Sampler>,
         thread_pool: Arc<ThreadPool>,
         fonts: Arc<TextFont>,
@@ -54,15 +50,64 @@ impl EntityComponent {
     ) -> Self {
         Self {
             buffer: CommandBuffer::new(),
-            memory_allocator,
-            descriptor_allocator,
-            descriptor_cache,
-            pipeline_cache,
+            memory,
             sampler,
             thread_pool,
             fonts,
             storage,
         }
+    }
+    pub(crate) fn _draw_secondary_command_buffer(
+        &mut self,
+        constants: Constants,
+        secondary_command_buffers: Arc<Mutex<Vec<Arc<SecondaryAutoCommandBuffer>>>>,
+        shape_name: String,
+        class: ClassInfo,
+        vertex_cursor: u32,
+        vertex_count: u32,
+        queue_index: u32,
+    ) {
+        let command_buffer_allocator = self.memory.command_buffer_allocator.clone();
+        let pipeline_cache = self.memory.pipelines.clone();
+        let descriptor_set_cache = self.memory.descriptors.clone();
+        let command_buffers = secondary_command_buffers.clone();
+
+        let mut builder = AutoCommandBufferBuilder::secondary(
+            command_buffer_allocator,
+            queue_index,
+            CommandBufferUsage::OneTimeSubmit,
+            CommandBufferInheritanceInfo::default(),
+        )
+        .expect("Secondary buffer creating error");
+
+        let pipeline = pipeline_cache.get(&shape_name).unwrap();
+
+        let layout = pipeline.layout();
+        if !layout.push_constant_ranges().is_empty() {
+            builder
+                .push_constants(pipeline.layout().clone(), 0, constants)
+                .unwrap();
+        }
+
+        builder.bind_pipeline_graphics(pipeline.clone()).unwrap();
+        if let Some(desc) = descriptor_set_cache.get(&class.class_name) {
+            builder
+                .bind_descriptor_sets(
+                    vulkano::pipeline::PipelineBindPoint::Graphics,
+                    pipeline.layout().clone(),
+                    0,
+                    desc.clone(),
+                )
+                .unwrap();
+        }
+        unsafe {
+            builder.draw(vertex_count, 1, vertex_cursor, 0).unwrap();
+        }
+
+        command_buffers
+            .lock()
+            .unwrap()
+            .push(builder.build().unwrap());
     }
 
     pub fn add<G>(&mut self, drw: G, transformation: Transform, color: Rgba8)
@@ -137,10 +182,10 @@ impl EntityComponent {
     ) {
         debug!("{:?}", class);
 
-        let memory_allocator = self.memory_allocator.clone();
-        let descriptor_set_allocator = self.descriptor_allocator.clone();
-        let descriptor_set_cache = self.descriptor_cache.clone();
-        let pipeline_cache = self.pipeline_cache.clone();
+        let memory_allocator = self.memory.memory_allocator.clone();
+        let descriptor_set_allocator = self.memory.descriptor_allocator.clone();
+        let descriptor_set_cache = self.memory.descriptors.clone();
+        let pipeline_cache = self.memory.pipelines.clone();
         let sampler = Some(self.sampler.clone());
 
         let descriptor_id = DescriptorID::from(&class);
@@ -186,10 +231,10 @@ impl EntityComponent {
 
         shape.create_descriptor(
             DescriptorID::from(&class),
-            self.memory_allocator.clone(),
-            self.descriptor_allocator.clone(),
-            self.descriptor_cache.clone(),
-            self.pipeline_cache.clone(),
+            self.memory.memory_allocator.clone(),
+            self.memory.descriptor_allocator.clone(),
+            self.memory.descriptors.clone(),
+            self.memory.pipelines.clone(),
             Some(self.sampler.clone()),
         );
 
@@ -207,7 +252,7 @@ impl EntityComponent {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClassInfo {
     pub type_id: TypeId,
     pub class_name: String,

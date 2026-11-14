@@ -12,7 +12,7 @@ use vulkano::{
         DynamicState, GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
-            color_blend::ColorBlendState,
+            color_blend::{AttachmentBlend, ColorBlendAttachmentState, ColorBlendState},
             input_assembly::{InputAssemblyState, PrimitiveTopology},
             multisample::MultisampleState,
             rasterization::RasterizationState,
@@ -26,7 +26,15 @@ use vulkano::{
 };
 use winit::raw_window_handle::HasDisplayHandle;
 
-use crate::SnakeVertex;
+use crate::{
+    SnakeVertex,
+    res::cache::{CacheProvider, PipelineCache},
+    shaders::{
+        circle_shader::{circle_fs, circle_vs},
+        image_shader::{image_fs, image_vs},
+        square_shader::{square_fs, square_vs},
+    },
+};
 
 pub fn select_render_device(
     instance: Arc<Instance>,
@@ -271,4 +279,62 @@ pub(crate) fn get_vulkan_instance(
     .unwrap();
 
     instance
+}
+
+pub(crate) fn add_shaders(
+    pipelines: Arc<PipelineCache>,
+    device: Arc<Device>,
+    render_pass: Arc<RenderPass>,
+) {
+    let vs_square = square_vs::load(device.clone()).unwrap();
+    let fs_square = square_fs::load(device.clone()).unwrap();
+    let square_pipeline = create_pipeline(
+        device.clone(),
+        render_pass.clone(),
+        vs_square.entry_point("main").unwrap(),
+        fs_square.entry_point("main").unwrap(),
+        ColorBlendState {
+            attachments: vec![ColorBlendAttachmentState {
+                blend: Some(AttachmentBlend::alpha()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+
+    let vs_circle = circle_vs::load(device.clone()).unwrap();
+    let fs_circle = circle_fs::load(device.clone()).unwrap();
+    let circle_pipeline = create_pipeline(
+        device.clone(),
+        render_pass.clone(),
+        vs_circle.entry_point("main").unwrap(),
+        fs_circle.entry_point("main").unwrap(),
+        ColorBlendState {
+            attachments: vec![ColorBlendAttachmentState {
+                blend: Some(AttachmentBlend::alpha()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+
+    let vs_image = image_vs::load(device.clone()).unwrap();
+    let fs_image = image_fs::load(device.clone()).unwrap();
+    let image_pipeline = create_pipeline(
+        device.clone(),
+        render_pass.clone(),
+        vs_image.entry_point("main").unwrap(),
+        fs_image.entry_point("main").unwrap(),
+        ColorBlendState {
+            attachments: vec![ColorBlendAttachmentState {
+                blend: Some(AttachmentBlend::alpha()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+
+    pipelines.insert(("circle".to_string(), circle_pipeline));
+    pipelines.insert(("square".to_string(), square_pipeline));
+    pipelines.insert(("image".to_string(), image_pipeline));
 }

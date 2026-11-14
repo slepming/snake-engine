@@ -23,6 +23,9 @@ tracy-client = { version = "0.18.4", default-features = false, features = ["enab
 hecs = "0.11"
 snake-macros = { path = "macros" }
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+jemallocator = "0.5.4"
+
 
 [dependencies.winit]
 version = "0.30.12"
