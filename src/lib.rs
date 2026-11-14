@@ -2,7 +2,7 @@
 
 pub use color::Rgba8;
 pub use hecs::{CommandBuffer, Entity};
-use rayon::{ThreadPool, ThreadPoolBuilder, iter::ParallelIterator, slice::ParallelSlice};
+use rayon::{ThreadPool, ThreadPoolBuilder, iter::ParallelIterator, slice::ParallelSlice, iter::IndexedParallelIterator};
 use std::{
     ops::RangeInclusive,
     sync::{Arc, RwLock},
@@ -90,7 +90,7 @@ pub mod utils;
 pub type Vector = glam::Vec2;
 pub type GameObjectDrawable = Arc<RwLock<Box<dyn GameObject>>>;
 
-const THREAD_POOL_SIZE: usize = 12;
+const THREAD_POOL_SIZE: usize = 6;
 
 #[global_allocator]
 #[cfg(debug_assertions)]
@@ -256,16 +256,25 @@ impl EngineContext {
             //builder.bind_vertex_buffers(0, mesh.0).unwrap();
 
             let mut world = self.game.world.write().unwrap();
+            self.game.world_buffer.buffer.run_on(&mut world);
 
             let window_size: [f32; 2] = self.rcx.as_ref().unwrap().window.inner_size().into();
 
             let world_len = world.len();
 
-            let mut result_buffers: Vec<Arc<dyn SecondaryCommandBufferAbstract>> = world
-                .query::<(hecs::Entity, (&ClassInfo, &Shapes, &mut DynObject, &Rgba8))>()
-                .iter()
-                .collect::<Vec<_>>()
-                .par_chunks(world_len as usize / THREAD_POOL_SIZE)
+            let mut result_buffers: Vec<Arc<dyn SecondaryCommandBufferAbstract>> = Vec::with_capacity(THREAD_POOL_SIZE);
+            let mut query: Vec<(hecs::Entity, (&ClassInfo, &Shapes, &mut DynObject, &Rgba8))> = Vec::with_capacity(world_len as usize);
+
+            let mut query_borrow = world
+                .query::<(hecs::Entity, (&ClassInfo, &Shapes, &mut DynObject, &Rgba8))>();
+
+            let world_iter = query_borrow.iter();
+
+            for q in world_iter {
+                query.push(q);
+            }
+
+            query.par_chunks(world_len as usize / THREAD_POOL_SIZE)
                 .map(|chunk| {
                     let mut builder = AutoCommandBufferBuilder::secondary(
                         command_buffer_allocator.clone(),
@@ -343,17 +352,19 @@ impl EngineContext {
                     }
 
                     builder.build().unwrap() as Arc<dyn SecondaryCommandBufferAbstract>
-                }).collect();
+                }).collect_into_vec(&mut result_buffers);
 
             buffers.write().unwrap().append(&mut result_buffers);
-            self.game.world_buffer.buffer.run_on(&mut world);
         }
 
-        buffers
-            .write()
-            .unwrap()
-            .drain(..)
-            .collect()
+        let mut guard = buffers.write().unwrap();
+        std::mem::take(&mut *guard)
+
+        //buffers
+        //    .write()
+        //    .unwrap()
+        //    .drain(..)
+        //    .collect()
     }
 }
 
