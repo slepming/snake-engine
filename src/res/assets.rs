@@ -80,6 +80,7 @@ impl TextureStorage {
                 return;
             }
 
+            #[cfg(feature = "profiling")]
             let _span = tracy_client::span!("Engine::load_texture");
 
             let texture: Texture = {
@@ -106,6 +107,7 @@ impl TextureStorage {
         file_name: &'static Path,
         internal: bool,
     ) -> Arc<TextureHandler> {
+        #[cfg(feature = "profiling")]
         let _span = tracy_client::span!("Engine::load_texture");
         let file = file_name.file_name().unwrap().to_string_lossy().to_string();
 

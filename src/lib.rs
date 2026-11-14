@@ -2,7 +2,10 @@
 
 pub use color::Rgba8;
 pub use hecs::{CommandBuffer, Entity};
-use rayon::{ThreadPool, ThreadPoolBuilder, iter::ParallelIterator, slice::ParallelSlice, iter::IndexedParallelIterator};
+use rayon::{
+    ThreadPool, ThreadPoolBuilder, iter::IndexedParallelIterator, iter::ParallelIterator,
+    slice::ParallelSlice,
+};
 use std::{
     ops::RangeInclusive,
     sync::{Arc, RwLock},
@@ -13,7 +16,10 @@ use vulkano::{
     Validated, VulkanError,
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferInheritanceInfo, CommandBufferInheritanceRenderPassInfo, CommandBufferInheritanceRenderPassType, CommandBufferUsage, RenderPassBeginInfo,  SecondaryCommandBufferAbstract, SubpassBeginInfo, SubpassContents, SubpassEndInfo
+        AutoCommandBufferBuilder, CommandBufferInheritanceInfo,
+        CommandBufferInheritanceRenderPassInfo, CommandBufferInheritanceRenderPassType,
+        CommandBufferUsage, RenderPassBeginInfo, SecondaryCommandBufferAbstract, SubpassBeginInfo,
+        SubpassContents, SubpassEndInfo,
     },
     device::{Device, DeviceExtensions, Queue},
     image::{
@@ -22,7 +28,10 @@ use vulkano::{
     },
     instance::Instance,
     memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryTypeFilter},
-    pipeline::{Pipeline, graphics::{vertex_input::Vertex, viewport::Viewport}},
+    pipeline::{
+        Pipeline,
+        graphics::{vertex_input::Vertex, viewport::Viewport},
+    },
     render_pass::{Framebuffer, Subpass},
     swapchain::{
         CompositeAlpha, Surface, SurfaceInfo, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
@@ -94,6 +103,7 @@ const THREAD_POOL_SIZE: usize = 6;
 
 #[global_allocator]
 #[cfg(debug_assertions)]
+#[cfg(feature = "profiling")]
 static GLOBAL: tracy_client::ProfiledAllocator<std::alloc::System> =
     tracy_client::ProfiledAllocator::new(std::alloc::System, 5);
 
@@ -126,6 +136,7 @@ impl EngineContext {
     pub fn new(event_loop: &EventLoop<()>) -> Self {
         tracing_subscriber::fmt::init();
 
+        #[cfg(feature = "profiling")]
         let _span = tracy_client::span!("Engine::new");
 
         let instance = get_vulkan_instance(event_loop, vec![]);
@@ -248,25 +259,27 @@ impl EngineContext {
         let buffers: Arc<RwLock<Vec<Arc<dyn SecondaryCommandBufferAbstract>>>> =
             Arc::new(RwLock::new(Vec::with_capacity(THREAD_POOL_SIZE)));
 
+        let mut world = self.game.world.write().unwrap();
+        self.game.world_buffer.buffer.run_on(&mut world);
+
         if let Some(mesh) = mesh_buffers {
+            #[cfg(feature = "profiling")]
             let _span_draw = tracy_client::span!("Engine:: Preparing Objects for Rendering");
             let vertex_buffer = mesh.0;
             let matrices = mesh.1;
             let vertex_cursors = mesh.2;
             //builder.bind_vertex_buffers(0, mesh.0).unwrap();
 
-            let mut world = self.game.world.write().unwrap();
-            self.game.world_buffer.buffer.run_on(&mut world);
-
             let window_size: [f32; 2] = self.rcx.as_ref().unwrap().window.inner_size().into();
 
             let world_len = world.len();
 
-            let mut result_buffers: Vec<Arc<dyn SecondaryCommandBufferAbstract>> = Vec::with_capacity(THREAD_POOL_SIZE);
-            let mut query: Vec<(hecs::Entity, (&ClassInfo, &Shapes, &mut DynObject, &Rgba8))> = Vec::with_capacity(world_len as usize);
+            let mut result_buffers: Vec<Arc<dyn SecondaryCommandBufferAbstract>> =
+                Vec::with_capacity(THREAD_POOL_SIZE);
+            let mut query: Vec<(hecs::Entity, (&ClassInfo, &Shapes, &Rgba8))> =
+                Vec::with_capacity(world_len as usize);
 
-            let mut query_borrow = world
-                .query::<(hecs::Entity, (&ClassInfo, &Shapes, &mut DynObject, &Rgba8))>();
+            let mut query_borrow = world.query::<(hecs::Entity, (&ClassInfo, &Shapes, &Rgba8))>();
 
             let world_iter = query_borrow.iter();
 
@@ -274,7 +287,8 @@ impl EngineContext {
                 query.push(q);
             }
 
-            query.par_chunks(world_len as usize / THREAD_POOL_SIZE)
+            query
+                .par_chunks(world_len as usize / THREAD_POOL_SIZE)
                 .map(|chunk| {
                     let mut builder = AutoCommandBufferBuilder::secondary(
                         command_buffer_allocator.clone(),
@@ -291,15 +305,17 @@ impl EngineContext {
                             ),
                             ..Default::default()
                         },
-                    ).expect("Secondary buffer creating error");
+                    )
+                    .expect("Secondary buffer creating error");
 
                     for obj in chunk {
+                        #[cfg(feature = "profiling")]
                         let _span_draw = tracy_client::span!("Engine: Draw Item");
                         let id = obj.0.id() as usize - 1;
 
                         let matrix = matrices[id].clone();
 
-                        let colour = obj.1.3;
+                        let colour = obj.1.2;
                         let constants = Constants(
                             matrix,
                             window_size.clone(),
@@ -311,10 +327,12 @@ impl EngineContext {
 
                         let vertex_count = SQUARE_VERTEX.len() as u32;
                         let vertex_cursor = vertex_cursors[id];
-                        
+
                         //entity.update(&mut self.game.world_buffer);
-                        
-                        let pipeline = pipeline_cache.get(&obj.1.1.as_ref().to_ascii_lowercase()).expect("Pipeline not found");
+
+                        let pipeline = pipeline_cache
+                            .get(&obj.1.1.as_ref().to_ascii_lowercase())
+                            .expect("Pipeline not found");
 
                         let layout = pipeline.layout();
 
@@ -345,17 +363,26 @@ impl EngineContext {
                             .unwrap();
 
                         unsafe {
-                            builder
-                                .draw(vertex_count, 1, vertex_cursor, 0)
-                                .unwrap();
+                            builder.draw(vertex_count, 1, vertex_cursor, 0).unwrap();
                         }
                     }
 
                     builder.build().unwrap() as Arc<dyn SecondaryCommandBufferAbstract>
-                }).collect_into_vec(&mut result_buffers);
+                })
+                .collect_into_vec(&mut result_buffers);
 
             buffers.write().unwrap().append(&mut result_buffers);
         }
+
+        world
+            .query::<(hecs::Entity, &mut DynObject)>()
+            .iter()
+            .for_each(|e| {
+                // I should move this
+                // handling to another
+                // thread.
+                e.1.update(&mut self.game.world_buffer);
+            });
 
         let mut guard = buffers.write().unwrap();
         std::mem::take(&mut *guard)
@@ -370,6 +397,7 @@ impl EngineContext {
 
 impl ApplicationHandler for EngineContext {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(feature = "profiling")]
         let _span = tracy_client::span!("Engine::resumed");
         let window: Arc<Window>;
         debug!("Creating window");
@@ -633,6 +661,7 @@ impl ApplicationHandler for EngineContext {
                 event_loop.exit();
             }
             WindowEvent::Resized(_) => {
+                #[cfg(feature = "profiling")]
                 let _span = tracy_client::span!("Engine::resize");
                 if let Some(rcx) = self.rcx.as_mut() {
                     rcx.recreate_swapchain = true;
@@ -653,24 +682,25 @@ impl ApplicationHandler for EngineContext {
                         }
                         #[cfg(debug_assertions)]
                         Key::Named(NamedKey::F1) => {
-                        //    debug!("Drawable calculation positions started");
-                        //    if let Some(cursor) = self.game.mouse_position {
-                        //        let drawables = self.game.children.get_by_position(cursor);
-                        //        for drawable in drawables {
-                        //            dbg!(&drawable);
-                        //            debug!(
-                        //                "drawable with id: {}",
-                        //                drawable.lock().unwrap().render.mesh.get_id()
-                        //            );
-                        //        }
-                        //    }
-                        //    debug!("Drawable calculation positions finished");
+                            //    debug!("Drawable calculation positions started");
+                            //    if let Some(cursor) = self.game.mouse_position {
+                            //        let drawables = self.game.children.get_by_position(cursor);
+                            //        for drawable in drawables {
+                            //            dbg!(&drawable);
+                            //            debug!(
+                            //                "drawable with id: {}",
+                            //                drawable.lock().unwrap().render.mesh.get_id()
+                            //            );
+                            //        }
+                            //    }
+                            //    debug!("Drawable calculation positions finished");
                         }
                         _ => {}
                     }
                 }
             }
             WindowEvent::RedrawRequested => {
+                #[cfg(feature = "profiling")]
                 let _span = tracy_client::span!("Engine::update");
                 let window_size = self.rcx.as_ref().unwrap().window.inner_size();
 
@@ -719,7 +749,8 @@ impl ApplicationHandler for EngineContext {
                 // This function can block if no image is available. The parameter is an optional
                 // timeout after which the function call will return an error.
 
-                let span_acquire = tracy_client::span!("GPU: Acquire Next Image");
+                #[cfg(feature = "profiling")]
+                let _ = tracy_client::span!("GPU: Acquire Next Image");
                 let (image_index, suboptimal, acquire_future) =
                     match acquire_next_image(self.rcx.as_ref().unwrap().swapchain.clone(), None)
                         .map_err(Validated::unwrap)
@@ -731,8 +762,6 @@ impl ApplicationHandler for EngineContext {
                         }
                         Err(e) => panic!("failed to acquire next image: {e}"),
                     };
-
-                drop(span_acquire);
 
                 // `acquire_next_image` can be successful, but suboptimal. This means that the
                 // swapchain image will still work, but it may not display correctly. With some
@@ -754,7 +783,8 @@ impl ApplicationHandler for EngineContext {
 
                 let current_framebuffer =
                     self.rcx.as_ref().unwrap().framebuffers[image_index as usize].clone();
-                let span_cmd = tracy_client::span!("GPU: Record Command Buffer");
+                #[cfg(feature = "profiling")]
+                let _ = tracy_client::span!("GPU: Record Command Buffer");
                 let mut builder = AutoCommandBufferBuilder::primary(
                     self.memory.command_buffer_allocator.clone(),
                     self.current_queue.queue_family_index(),
@@ -801,9 +831,8 @@ impl ApplicationHandler for EngineContext {
                 // Finish recording the command buffer by calling `end`.
                 let command_buffer = builder.build().unwrap();
 
-                drop(span_cmd);
-
-                let span_submit = tracy_client::span!("GPU: Submit & Present");
+                #[cfg(feature = "profiling")]
+                let _ = tracy_client::span!("GPU: Submit & Present");
                 let future = self
                     .rcx
                     .as_mut()
@@ -858,7 +887,7 @@ impl ApplicationHandler for EngineContext {
                     .unwrap()
                     .cleanup_finished();
 
-                drop(span_submit);
+                #[cfg(feature = "profiling")]
                 tracy_client::Client::running().unwrap().frame_mark();
             }
             _ => {}
@@ -906,6 +935,7 @@ pub(crate) fn calculate_drawables(
     if entities_count < 1 {
         return (None, entities_count);
     }
+    #[cfg(feature = "profiling")]
     let _span = tracy_client::span!("Engine::calculate_drawables");
 
     // Predicting the possible vector size

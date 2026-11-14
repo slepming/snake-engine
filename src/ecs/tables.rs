@@ -16,7 +16,6 @@ use std::{
     io::Cursor,
     sync::{Arc, Mutex},
 };
-use tracing::debug;
 use vulkano::{
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferInheritanceInfo, CommandBufferUsage,
@@ -180,7 +179,7 @@ impl EntityComponent {
         class: ClassInfo,
         color: Rgba8,
     ) {
-        debug!("{:?}", class);
+        //debug!("{:?}", class);
 
         let memory_allocator = self.memory.memory_allocator.clone();
         let descriptor_set_allocator = self.memory.descriptor_allocator.clone();
@@ -191,7 +190,7 @@ impl EntityComponent {
         let descriptor_id = DescriptorID::from(&class);
 
         if let Some(shp) = shape {
-            debug!("Object contains shape");
+            //debug!("Object contains shape");
             let shape_clone = shp.clone();
             // TODO Likely someday it's will crash
             self.thread_pool.spawn(move || {
@@ -207,7 +206,7 @@ impl EntityComponent {
 
             self.buffer.spawn((class, transformation, shp, drw, color));
         } else {
-            debug!("Object not contains shape");
+            //debug!("Object not contains shape");
             self.buffer.spawn((class, transformation, drw, color));
         }
     }

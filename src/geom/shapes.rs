@@ -104,8 +104,9 @@ impl Shapes {
         pipeline_cache: Arc<PipelineCache>,
         sampler: Option<Arc<Sampler>>,
     ) {
+        #[cfg(feature = "profiling")]
         let _span = tracy_client::span!("Shapes::create_descriptor");
-        debug!(shape = self.as_ref().to_lowercase());
+        //debug!(shape = self.as_ref().to_lowercase());
         let pipeline = pipeline_cache
             .get(self.as_ref().to_lowercase().as_ref())
             .expect("Pipeline not found");

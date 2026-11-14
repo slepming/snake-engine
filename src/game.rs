@@ -74,7 +74,7 @@ impl GameContext {
 pub trait GameObject {
     /// Executes every frame
     fn update(&mut self, world: &mut EntityComponent);
-
+    /// Executes once at spawn object
     fn start(&mut self, world: &mut EntityComponent);
 }
 
