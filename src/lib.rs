@@ -62,7 +62,7 @@ use crate::{
     },
     mem::engine_memory::EngineMemory,
     render::{MeshBuffers, RenderContext},
-    res::cache::CacheProvider,
+    res::{cache::CacheProvider, errors::WorldError},
     text::sprite_text::SpriteTextCreateInfo,
     thread::scheduler::{Scheduler, SchedulerContext, create_scheduler},
     utils::{
@@ -208,6 +208,8 @@ impl EngineContext {
         T: GameObject + Send + Sync + 'static,
     {
         let mut world = self.game.world.write().unwrap();
+
+        // Canvas is first object in objects hierarchy. We find first canvas in world and use it
         let canvas_f = world.query_mut::<&mut Canvas>();
 
         let mut canvas_v: Vec<&mut Canvas> = canvas_f.into_iter().collect();
@@ -239,7 +241,7 @@ impl EngineContext {
         &mut self,
         viewport: Viewport,
         current_framebuffer: Arc<Framebuffer>,
-    ) -> Vec<Arc<dyn SecondaryCommandBufferAbstract>> {
+    ) -> Result<Vec<Arc<dyn SecondaryCommandBufferAbstract>>, WorldError> {
         let (mesh_buffers, _children_size) = calculate_drawables(
             self.memory.memory_allocator.clone(),
             &mut self.game,
@@ -274,6 +276,8 @@ impl EngineContext {
 
             let world_len = world.len();
 
+            // It's very very very bad thing because we allocate two new so big vectors, but i idk
+            // how I can replace this
             let mut result_buffers: Vec<Arc<dyn SecondaryCommandBufferAbstract>> =
                 Vec::with_capacity(THREAD_POOL_SIZE);
             let mut query: Vec<(hecs::Entity, (&ClassInfo, &Shapes, &Rgba8))> =
@@ -287,8 +291,16 @@ impl EngineContext {
                 query.push(q);
             }
 
+            let mut chunks = world_len as usize / THREAD_POOL_SIZE;
+
+            if world_len == 0 { return Err(WorldError::EmptyWorld); }
+
+            if world_len < THREAD_POOL_SIZE as u32 {
+                chunks = world_len as usize;
+            }
+
             query
-                .par_chunks(world_len as usize / THREAD_POOL_SIZE)
+                .par_chunks(chunks)
                 .map(|chunk| {
                     let mut builder = AutoCommandBufferBuilder::secondary(
                         command_buffer_allocator.clone(),
@@ -385,13 +397,7 @@ impl EngineContext {
             });
 
         let mut guard = buffers.write().unwrap();
-        std::mem::take(&mut *guard)
-
-        //buffers
-        //    .write()
-        //    .unwrap()
-        //    .drain(..)
-        //    .collect()
+        Ok(std::mem::take(&mut *guard))
     }
 }
 
@@ -818,7 +824,14 @@ impl ApplicationHandler for EngineContext {
                     )
                     .unwrap(); // Between begin render pass and end render pass with SubpassContents::SecondaryCommandBuffers vulkan restrict any commands(excepion it's a command `execute_commands`).
 
-                let secondary_buffers = self.draw(viewport, current_framebuffer);
+                let secondary_buffers = match self.draw(viewport, current_framebuffer) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        match e {
+                            WorldError::EmptyWorld => return,
+                        }
+                    },
+                };
 
                 builder
                     .execute_commands_from_vec(secondary_buffers)
