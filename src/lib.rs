@@ -41,34 +41,21 @@ use vulkano::{
 };
 use winit::{
     application::ApplicationHandler,
-    dpi::{PhysicalSize, Size},
     event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{Key, NamedKey},
     platform::modifier_supplement::KeyEventExtModifierSupplement,
-    window::{Fullscreen, Window, WindowId},
+    window::{Window, WindowId},
 };
 
-#[cfg(target_family = "unix")]
-use winit::platform::wayland::WindowAttributesExtWayland;
-
 use crate::{
-    dbg::debug_utils::DebugUtils,
-    ecs::tables::{ClassInfo, DynObject},
-    game::{Canvas, GameContext, GameObject},
-    geom::{
+    cfg::Configuration, dbg::debug_utils::DebugUtils, ecs::tables::{ClassInfo, DynObject}, game::{Canvas, GameContext, GameObject}, geom::{
         matrix::Transform,
         shapes::{SQUARE_VERTEX, Shapes},
-    },
-    mem::engine_memory::EngineMemory,
-    render::{MeshBuffers, RenderContext},
-    res::{cache::CacheProvider, errors::WorldError},
-    text::sprite_text::SpriteTextCreateInfo,
-    thread::scheduler::{Scheduler, SchedulerContext, create_scheduler},
-    utils::{
+    }, mem::engine_memory::EngineMemory, render::{MeshBuffers, RenderContext}, res::{cache::CacheProvider, errors::WorldError}, text::sprite_text::SpriteTextCreateInfo, thread::scheduler::{Scheduler, SchedulerContext, create_scheduler}, utils::{
         vulkan::{add_shaders, get_vulkan_instance, select_render_device},
         window::window_size_dependent_setup,
-    },
+    }
 };
 
 pub use snake_macros::{static_game_object, text_object};
@@ -80,6 +67,7 @@ use jemallocator::Jemalloc;
 //#[cfg(debug_assertions)]
 //use crate::testing::finder::Finder;
 
+pub mod cfg;
 pub mod dbg;
 pub mod drw;
 pub mod ecs;
@@ -129,11 +117,12 @@ pub struct EngineContext {
     debug: DebugUtils,
     #[allow(dead_code)]
     thread_pool: Arc<ThreadPool>,
+    configuration: Arc<Configuration>,
     pub scheduler: (Scheduler, Arc<SchedulerContext>),
 }
 
 impl EngineContext {
-    pub fn new(event_loop: &EventLoop<()>) -> Self {
+    pub fn new(event_loop: &EventLoop<()>, configuration: Configuration) -> Self {
         tracing_subscriber::fmt::init();
 
         #[cfg(feature = "profiling")]
@@ -195,6 +184,7 @@ impl EngineContext {
             queues,
             sampler,
             rcx: None,
+            configuration: Arc::new(configuration),
             debug,
             thread_pool,
             scheduler: create_scheduler(),
@@ -293,7 +283,9 @@ impl EngineContext {
 
             let mut chunks = world_len as usize / THREAD_POOL_SIZE;
 
-            if world_len == 0 { return Err(WorldError::EmptyWorld); }
+            if world_len == 0 {
+                return Err(WorldError::EmptyWorld);
+            }
 
             if world_len < THREAD_POOL_SIZE as u32 {
                 chunks = world_len as usize;
@@ -412,17 +404,7 @@ impl ApplicationHandler for EngineContext {
             window = Arc::new(
                 event_loop
                     .create_window(
-                        Window::default_attributes()
-                            .with_title("snake")
-                            .with_name("snake-engine", "snake-engine")
-                            .with_fullscreen(Some(Fullscreen::Borderless(None)))
-                            .with_min_inner_size(Size::Physical(PhysicalSize {
-                                width: 640,
-                                height: 480,
-                            }))
-                            .with_max_inner_size(
-                                event_loop.available_monitors().next().unwrap().size(),
-                            ),
+                        self.configuration.window_attributes.clone()
                     )
                     .unwrap(),
             );
@@ -433,16 +415,7 @@ impl ApplicationHandler for EngineContext {
             window = Arc::new(
                 event_loop
                     .create_window(
-                        Window::default_attributes()
-                            .with_title("snake")
-                            .with_fullscreen(Some(Fullscreen::Borderless(None)))
-                            .with_min_inner_size(Size::Physical(PhysicalSize {
-                                width: 640,
-                                height: 480,
-                            }))
-                            .with_max_inner_size(
-                                event_loop.available_monitors().next().unwrap().size(),
-                            ),
+                        self.configuration.window_attributes.clone()
                     )
                     .unwrap(),
             );
@@ -826,10 +799,8 @@ impl ApplicationHandler for EngineContext {
 
                 let secondary_buffers = match self.draw(viewport, current_framebuffer) {
                     Ok(r) => r,
-                    Err(e) => {
-                        match e {
-                            WorldError::EmptyWorld => return,
-                        }
+                    Err(e) => match e {
+                        WorldError::EmptyWorld => return,
                     },
                 };
 
